@@ -1,0 +1,13 @@
+torch>=1.12.0
+torchvision>=0.13.0
+numpy
+opencv_python
+loguru
+tqdm
+ema_pytorch
+torchmetrics
+albumentations
+torch_tb_profiler
+easydict
+scikit-learn
+scipy

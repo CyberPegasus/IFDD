@@ -1,0 +1,6 @@
+CPU: Intel(R) Xeon(R) Gold 6330
+GPU: NVIDIA GeForce RTX 3090
+Memory: 256G
+Operating System: Ubuntu 20.04
+Software Framework: PyTorch 2.0.1 (CUDA 11.8)
+Relevant Software libraries: Please refer to environment.yaml and requirements.txt

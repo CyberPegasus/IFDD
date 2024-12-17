@@ -1,0 +1,59 @@
+{
+    "exp_name": "IFDD_MAFW",
+    "exp_file": "exps/EXP_IFDD_MAFW.py",
+    "batch_size": 16, 
+    "num_workers": 4,
+    "gpuid": "0",
+
+    "split_num": 1,
+
+    "facial_project":false,
+    "SSL":false,
+    "SSL_Network":true,
+    "ssl_out_dim":96,
+    "use_LADM":true,
+    "WaveSF_preUpdate":true,
+    "WaveNorm":true,
+    "WavePool":false,
+    "use_ISSM":true,
+    "use_lowFreq":false,
+    "multi_view":false,
+
+    "strong_aug":true,
+    "resample":false,
+    "resample_initHead":false,
+
+    "use_decouple_neutral":false,
+    "neutral_id":4,
+
+    "clip_duration":32,
+    "clip_stride":2,
+    "single_val_view":true,
+
+    "optimize_WaveSF":true,
+    "embed_net":"Conv",
+    "attention_dropout": 0,
+    "dropout": 0.5,
+    "freeze_list" : [],
+
+    "mixup":true,
+    "soft_label":false,
+    "fp16":false,
+
+    "optimizer":"AdamW",
+    "use_ema": false,
+    "lr":1e-4,
+    "weight_decay":1e-3,
+    "loss" : "CE",
+    "max_epoch": 100,
+    "warmup_epoch": 10,
+    "val_inter" : 1,
+    "print_inter" : 500,
+    "grad_clip": 0.0,
+    
+    "resume": false,
+    "resume_optimizer": false,
+    "ckpt": "",
+    "occupy": true,
+    "seed": 12345
+}
