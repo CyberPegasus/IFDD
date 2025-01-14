@@ -110,7 +110,9 @@ class Exp(mainExp):
         # -----------------  testing config ------------------ #
         
     def _dynamic_update(self):
-        # dynamic setting
+        # dynamic setting to make uploaded codes compatible with original version during code cleaning process
+        self.use_WaveSF = self.use_LADM
+        self.optimize_WaveSF = self.use_LADM
         self.enable_waveSF = self.use_LADM
         self.use_LADM = self.use_LADM or self.use_ISSM
         
