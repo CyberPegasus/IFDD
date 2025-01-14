@@ -115,10 +115,8 @@ class adaptSplit_dotsim(nn.Module):
         
         return x_a,x_d
 
-
 class adaptIndexSplit_dotsim(nn.Module):
     # Dot Mutiplication-based Similarity -> Learnable Index interpolation-based Selection
-    # NOTE: Current best method with self.receptive_filed = 2
     def __init__(self,
                  input_size:List[int],
                  down_size:int=7,
@@ -131,129 +129,9 @@ class adaptIndexSplit_dotsim(nn.Module):
         self.embed_dim = embed_dim
         self.top_k = self.T//2
         self.scaler = 1.0 / self.embed_dim
-        
         self.dim_project = nn.Sequential(
-            nn.Linear(self.down_size*self.down_size*embed_dim,embed_dim),
+            nn.Conv2d(self.embed_dim,self.down_size,kernel_size=1),
             nn.GELU(),
-            nn.Linear(embed_dim, embed_dim//8),
-            # DEBUG: need a layernorm
-        )
-        self.time_project = nn.Sequential(
-            nn.Linear(self.T,self.T),
-            nn.GELU(),
-            nn.Linear(self.T, 1),
-        )
-        self.offset_project_approx = nn.Sequential(
-            nn.Linear(self.T**2, self.T//2, bias=False),
-            nn.Tanh(), # scale to -1 and 1
-        )
-        self.offset_project_detail = nn.Sequential(
-            nn.Linear(self.T**2, self.T//2, bias=False),
-            nn.Tanh(), # scale to -1 and 1
-        )
-        self.receptive_filed = 2 # 2, or 1, or self.T//2 or self.T//4
-        # scale 2x up because 2x downsampling for time dimension
-        self.hook_attn = nn.Identity()
-        self.hook_approx = nn.Identity()
-        self.hook_detail = nn.Identity()
-        index_even = torch.arange(start=0,end=self.T,step=2)
-        index_odd = torch.arange(start=1,end=self.T+1,step=2)
-        self.register_buffer("index_even",index_even)
-        self.register_buffer("index_odd",index_odd)
-        
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.03)
-                if isinstance(m, nn.Linear) and m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-            elif isinstance(m, nn.LayerNorm):
-                if m.weight is not None:
-                    nn.init.constant_(m.weight, 1.0)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)        
-    
-    def normalize_grid(self,index_list):
-        n = index_list.shape[-1]*2
-        return 2.0 * index_list / max(n - 1, 1) - 1.0
-    
-    # @staticmethod
-    # def index_sample(x_in:torch.Tensor, index:torch.Tensor):
-    #     pass
-
-    def forward(self, x_in:torch.Tensor):
-        # input shape: B,C,T,H*W
-        b,c,t,hw = x_in.shape
-        xi:torch.Tensor = x_in.view(b,self.embed_dim,self.T,self.H,self.W).permute(0,2,1,3,4)# b,t,c,h,w
-        xi = xi.reshape(b,self.T*self.embed_dim,self.H,self.W) # b,t*c,h,w
-        
-        # spatial downsample
-        xi = F.adaptive_avg_pool2d(xi,output_size=(self.down_size,self.down_size)) # downsample HW for 56,28,14 to 7*7
-        xi = xi.view(b,self.T,self.embed_dim,self.down_size,self.down_size).permute(0,1,3,4,2) # b,t,h,w,c
-        
-        # project
-        xi = xi.flatten(start_dim=2,end_dim=-1)
-        xi = self.dim_project(xi) # b,t,c//8
-        
-        # correlation calculation
-        xi = torch.matmul(self.scaler*xi, xi.transpose(1,2)) # (b,t,t), output scores imply the correlation
-        xi = torch.softmax(xi,dim=-1) # (b,t,t), output scores imply the correlation
-        xi = self.hook_attn(xi) # for hook register
-        # offset obtain
-        # xi = self.time_project(xi) # b,t,t -> b,t,1
-        # xi = xi.squeeze(2) # b,t,1 -> b,t
-        xi = xi.flatten(start_dim=1)
-        offset_approx = self.offset_project_approx(xi)*self.receptive_filed # b,t-> b,t/2, output of offset_project belong to (-1,1)
-        offset_detail = self.offset_project_detail(xi)*self.receptive_filed
-        
-        # offset index
-        index_even = self.index_even.repeat(b,1)
-        index_odd = self.index_odd.repeat(b,1)
-        index_approx = index_even + offset_approx
-        index_detail = index_odd + offset_detail
-        # for hook register
-        index_approx = self.hook_approx(index_approx)
-        index_detail = self.hook_detail(index_detail)
-        index_approx = self.normalize_grid(index_approx)
-        index_detail = self.normalize_grid(index_detail)
-        
-        # rearrange for grid_sample, input N,C,H,W, grid N,H1,W1,2, output N,C,H1,W1
-        index_approx = index_approx[...,None,None] # b,n -> b,n,1,1
-        index_detail = index_detail[...,None,None] # b,n -> b,n,1,1
-        # since coordinate for grid is x,y for w,h
-        # our 1d dimension is for y, then padding zero for x
-        index_approx = F.pad(index_approx,(1,0),value=0.) # b,n,1,1 -> b,n,1,2
-        index_detail = F.pad(index_detail,(1,0),value=0.) # b,n,1,1 -> b,n,1,2
-        
-        x_in = x_in.permute(0,3,1,2).reshape(b,hw*c,t).unsqueeze(-1) # B,C,T,H*W -> B,H*W,C,T -> B,H*W*C,T,1
-        _mode = 'border' # 'zeros'
-        x_a = F.grid_sample(x_in,index_approx,mode='bilinear',padding_mode=_mode,align_corners=False).squeeze(3) # B,H*W*C,T,1
-        x_d = F.grid_sample(x_in,index_detail,mode='bilinear',padding_mode=_mode,align_corners=False).squeeze(3) # B,H*W*C,T,1
-        x_a = x_a.view(b,hw,c,t//2).permute(0,2,3,1).contiguous() # B,C,T,H*W
-        x_d = x_d.view(b,hw,c,t//2).permute(0,2,3,1).contiguous() # B,C,T,H*W
-        
-        return x_a,x_d
-
-class adaptIndexSplit_dotsim(nn.Module):
-    # Dot Mutiplication-based Similarity -> Learnable Index interpolation-based Selection
-    # NOTE: Current best method with self.receptive_filed = 2
-    def __init__(self,
-                 input_size:List[int],
-                 down_size:int=7,
-                 embed_dim:int=512,
-                 # receptive_filed:int=2,
-                 ) -> None:
-        super().__init__()
-        self.down_size = down_size # 7 for 56,28,14 feature pyramid
-        self.T,self.H,self.W = input_size
-        self.embed_dim = embed_dim
-        self.top_k = self.T//2
-        self.scaler = 1.0 / self.embed_dim
-        
-        self.dim_project = nn.Sequential(
-            nn.Linear(self.down_size*self.down_size*embed_dim,embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, embed_dim//8),
-            # DEBUG: need a layernorm
         )
         self.time_project = nn.Sequential(
             nn.Linear(self.T,self.T),
@@ -292,37 +170,31 @@ class adaptIndexSplit_dotsim(nn.Module):
     def normalize_grid(self,index_list):
         n = index_list.shape[-1]*2
         return 2.0 * index_list / max(n - 1, 1) - 1.0
-    
-    # @staticmethod
-    # def index_sample(x_in:torch.Tensor, index:torch.Tensor):
-    #     pass
 
     def forward(self, x_in:torch.Tensor):
         # input shape: B,C,T,H*W
         b,c,t,hw = x_in.shape
-        xi:torch.Tensor = x_in.view(b,self.embed_dim,self.T,self.H,self.W).permute(0,2,1,3,4)# b,t,c,h,w
-        xi = xi.reshape(b,self.T*self.embed_dim,self.H,self.W) # b,t*c,h,w
-        
-        # spatial downsample
-        xi = F.adaptive_avg_pool2d(xi,output_size=(self.down_size,self.down_size)) # downsample HW for 56,28,14 to 7*7
-        xi = xi.view(b,self.T,self.embed_dim,self.down_size,self.down_size).permute(0,1,3,4,2) # b,t,h,w,c
-        
-        # project
+        xi:torch.Tensor = x_in.view(b,self.embed_dim,self.T,self.H,self.W).permute(0,2,1,3,4)
+        xi = xi.reshape(b,self.T*self.embed_dim,self.H,self.W)
+        xi = F.adaptive_avg_pool2d(xi,output_size=(self.down_size,self.down_size)) 
+        xi = xi.reshape(b,self.T,self.embed_dim,self.down_size,self.down_size)
+        xi = xi.view(b*self.T,self.embed_dim,self.down_size,self.down_size)
+        xi = self.dim_project(xi)
+        xi = xi.view(b,self.T,self.down_size,self.down_size,self.down_size)
         xi = xi.flatten(start_dim=2,end_dim=-1)
-        xi = self.dim_project(xi) # b,t,c//8
         
         # correlation calculation
         xi = torch.matmul(self.scaler*xi, xi.transpose(1,2)) # (b,t,t), output scores imply the correlation
-        xi = torch.softmax(xi,dim=-1) # (b,t,t), output scores imply the correlation
         xi = self.hook_attn(xi) # for hook register
+        xi_approx = torch.softmax(xi,dim=-1)
+        xi_detail = torch.softmax(-xi,dim=-1)
         # offset obtain
         # xi = self.time_project(xi) # b,t,t -> b,t,1
         # xi = xi.squeeze(2) # b,t,1 -> b,t
-        xi = xi.flatten(start_dim=1)
-        offset_approx = self.offset_project_approx(xi)*self.receptive_filed # b,t-> b,t/2, output of offset_project belong to (-1,1)
-        offset_detail = self.offset_project_detail(xi)*self.receptive_filed
+        offset_approx = self.offset_project_approx(xi_approx.flatten(start_dim=1))*self.receptive_filed # b,t-> b,t/2, output of offset_project belong to (-1,1)
+        offset_detail = self.offset_project_detail(xi_detail.flatten(start_dim=1))*self.receptive_filed
         
-        # offset index # DEBUG
+        # offset index
         index_even = self.index_even.repeat(b,1)
         index_odd = self.index_odd.repeat(b,1)
         index_approx = index_even + offset_approx
